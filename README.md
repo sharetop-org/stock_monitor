@@ -1,0 +1,147 @@
+# stock-monitor
+
+A股股票购买策略 + 价格监控预警系统。基于 **Python**，行情数据源为 **ShareTop**，通知渠道为**邮件**，运行方式为**定时轮询 + 回测器**。
+
+## 特性
+
+- **可配置化**：数据源、轮询间隔、自选股、启用的策略及参数、预警规则、通知渠道全部由 YAML 配置驱动，改配置即改行为，无需改动代码。
+- **可扩展**：四大扩展点（数据源 / 交易策略 / 预警规则 / 通知器）都通过「抽象基类 + 注册表 + 配置注册」实现插件式接入。
+- **定时轮询监控**：基于 APScheduler，按配置间隔拉取行情，逐股运行预警规则、产生并推送（邮件）预警。
+- **回测器**：基于日 K 线对策略做历史回测，输出收益、年化、最大回撤、夏普、胜率与成交明细。
+- **N日新低监测报警**：触及 360/60 日等窗口的低点即触发邮件提醒，附上市以来最高价、当前低位相对高位涨跌幅，以及实时总市值/流通市值/市盈率/市净率等估值字段。
+- **「跌破N日新低买入 + 突破N日新高卖出」回测**：下跌分段累积建仓、冲高一次性清仓，输出总收益、XIRR 年化、胜率、盈亏比与每笔成交明细。
+
+## 目录结构
+
+```
+stock-monitor/
+├─ config/            # 全部可配置项（YAML）
+│  ├─ settings.yaml     # 运行模式、轮询间隔、数据源、通知开关、回测参数
+│  ├─ watchlist.yaml    # 自选股清单
+│  ├─ strategies.yaml   # 启用的策略与参数
+│  ├─ alerts.yaml       # 预警规则
+│  └─ secrets.yaml      # 敏感信息（Token / SMTP 密码），已 gitignore，勿提交
+├─ app/               # 核心代码
+│  ├─ core/            # 数据结构、注册表、交易时段
+│  ├─ datasource/      # 数据源抽象 + ShareTop 实现
+│  ├─ indicators/      # 技术指标
+│  ├─ strategy/        # 策略
+│  ├─ alert/           # 预警规则 + 通知器
+│  ├─ monitor/         # 轮询监控引擎（含低点监测 financial_monitoring_and_alerting.py）
+│  ├─ strategy/        # 策略（含 N日新低回测 days_backtest.py）
+│  └─ backtest/        # 回测引擎
+├─ scripts/           # 可运行脚本（监控 / 回测 / 冒烟测试 / 新低监测 / 新低回测）
+├─ data/              # 数据缓存与回测结果（已 gitignore）
+├─ logs/              # 运行日志（已 gitignore）
+└─ tests/             # 单元测试
+```
+
+## 快速开始
+
+### 1. 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. 配置
+
+```bash
+# 复制示例环境变量并在其中填入你的 Token 与通知凭据
+copy .env.example .env
+```
+
+然后把股票代码填入 `config/watchlist.yaml`，按需调整 `config/settings.yaml` / `config/strategies.yaml` / `config/alerts.yaml`。
+
+### 3. 先验证数据源
+
+```bash
+python scripts/test_source.py
+```
+
+### 4. 运行
+
+```bash
+# 回测某个策略（不联网通知，仅本地计算）
+python -m app.cli backtest --strategy ma_cross --start 20250101 --end 20260831
+
+# 启动定时监控（按 settings.yaml 的 interval 轮询 + 邮件预警）
+python -m app.cli monitor
+
+# 立即跑一次取价并检测预警（不上 scheduler）
+python -m app.cli once
+```
+
+## 新增功能：N日新低监测报警 & N日新低买入回测
+
+> 若使用 conda 环境，执行前先激活：`conda activate py310`，或直接用其解释器
+> `D:/software/miniconda3/envs/py310/python.exe scripts/... `。
+
+### 1. N日新低监测报警（`low-alert`）
+
+股价跌破指定交易日窗口的低点时，通过项目统一通知器 [app/alert/notifier/mail_sender_new.py](app/alert/notifier/mail_sender_new.py) 的 `MailNew` 推送邮件。邮件内容含：上市以来最高价与其日期、当前区间最低位相对高位的涨跌百分比、触发日实时 `close`，以及实时行情接口里的总市值、流通市值、每股净资产、每股收益(TTM)、动态/静态/TTM市盈率、市净率、涨跌幅。
+
+```bash
+# 一次性检查自选股（缺省 --symbols），命中即发邮件
+python -m app.cli low-alert
+
+# 指定股票、观察窗口、收件邮箱
+python -m app.cli low-alert --symbols 600036.SH,600519.SH --windows 360,60 --to you@example.com
+
+# 用包装脚本（与上等价）
+python scripts/run_low_alert.py --symbols 600036.SH,600519.SH --windows 360,60 --to you@example.com
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--symbols` | 股票代码，逗号分隔；缺省用 `watchlist.yaml` 自选股 |
+| `--windows` | 低位观察窗口（交易日天数），逗号分隔，默认 `360,60` |
+| `--to` | 收件邮箱；缺省取环境变量 `MAIL_ALERT_TO` |
+| `--interval` | 轮询间隔秒，`0`=只跑一次（默认）；>0 时阻塞轮询 |
+
+发送前需在 `.env` / `config/secrets.yaml` 配置 ShareTop Token（`SHARETOP_TOKEN`）与邮箱发信凭据。
+
+### 2. N日新低买入 / N日新高卖出回测（`low-backtest`）
+
+策略口径：**跌破 N 日新低买入（越跌越买、持仓累加）**，可选 **突破 N 日新高一次性清仓**；输出总收益、XIRR 复合年化、胜率、盈亏比、最大回撤与每笔买入/成交明细。
+
+```bash
+# 只买不卖（新低累积，不结算胜率）
+python -m app.cli low-backtest --symbols 600036.SH,600519.SH --low-days 250
+
+# 新低买入 + 突破 N 日新高卖出（可算胜率/盈亏比）
+python -m app.cli low-backtest --symbols 600809.SH --low-days 1250 --buy-amount 10000 --high-days 1250
+
+# 用包装脚本
+python scripts/run_low_backtest.py --symbols 600036.SH,600519.SH --low-days 250 --high-days 60
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--symbols` | 股票代码，逗号分隔；缺省用自选股 |
+| `--low-days` | 新低回看天数（交易日），默认 `1250`(≈5年)；跌破它即买入 |
+| `--buy-amount` | 单次买入金额，默认 `10000`（买不起 1 手则硬买 1 手） |
+| `--high-days` | 收盘价突破 N 日新高即卖出全部持仓（以统计胜率/盈亏比）；不传 = 只买不卖 |
+
+## ShareTop API 注意点（踩坑备忘）
+
+- `get_history_data` 的**日线周期参数是 `'d'`，不是 `'1d'`**（传 `1d` 会返回“周期参数有误”）。
+- **实时批量 K 线端点 `stockKline` 最多支持到 `120m`，不支持日线**；本项目在等日线时自动改用静态历史端点半逐只拉取。
+- 实时行情的代码字段是 **`ts_code`**，价格是 **`close`**、昨收是 **`pre_close`**（不是 `last_price/prev_close`）。
+- 时间戳单位不统一：**实时行情为秒、K 线为毫秒**，已做自动识别。
+- 批量实时的 `stockCode` 返回形如 `SH600519`（交易所前缀 + 6 位），本项目统一归一化成 `600519.SH`。
+
+## 扩展指南
+
+| 想加… | 步骤 |
+|---|---|
+| 新股票策略 | `app/strategy/` 新建一个继承 `BaseStrategy` 的类 → 在 `strategies.yaml` 注册并启用 |
+| 新预警规则 | `app/alert/` 新建一个 `BaseAlertRule` 子类 → 在 `alerts.yaml` 注册 |
+| 新通知渠道 | `app/alert/notifier/` 新建一个 `BaseNotifier` 子类 → 在 `settings.yaml` 启用 |
+| 新数据源 | `app/datasource/` 新建一个 `BaseDataSource` 子类 → 在 `settings.yaml` 切换 |
+
+详见各模块 docstring。
+
+## 免责声明
+
+本项目仅用于学习与技术验证，不构成任何投资建议。股市有风险，入市需谨慎。

@@ -1,0 +1,40 @@
+# ======== 价格预警规则 ========
+# 每条规则会按顺序对清单中每只股票检测；命中后按 settings.notify 的渠道发送并去重冷却。
+#
+# 常搭配的参数：
+#   compare      : ge(>=) le(<=) gt(>) lt(<) eq(==)
+#   target       : 阈值（价格/涨跌幅等）
+# 针对某只股票可单独 override（见 per_stock_rules）。
+
+# 全局规则：默认作用到此清单中所有股票
+rules:
+  - name: price_above           # 价格达到目标价
+    type: price_level
+    enabled: true
+    params:
+      compare: ge
+      target: 0                # 请按实际调整；0 表示关闭(见下方 per_stock)
+
+  - name: change_pct_outlier    # 单日涨跌幅超过 ±5%
+    type: change_pct
+    enabled: true
+    params:
+      max_rise: 5.0
+      max_fall: -5.0
+
+  - name: drop_below_ma20       # 收盘价跌破 MA20
+    type: ma_deviation
+    enabled: true
+    params:
+      ma: 20
+      mode: below
+
+# 针对特定股票覆盖/追加的规则（可选）。stock_symbols 用 ts_code。
+# 结构示例：
+# per_stock_rules:
+#   - ts_code: 600519.SH
+#     rules:
+#       - name: 茅台 target 1800
+#         type: price
+#         params: { compare: ge, target: 1800 }
+per_stock_rules:

@@ -1,0 +1,54 @@
+# ======== 全局运行配置 ========
+
+# 运行模式: monitor(定时轮询) | once(立即跑一次) | backtest(回测)
+# 也可通过命令行 --mode 覆盖
+mode: monitor
+
+data_source:
+  name: sharetop            # 数据源实现名，见 app/datasource/__init__.py 注册表
+  token_env: SHARETOP_TOKEN # 从该环境变量(或 .env)读取 token
+  cache_dir: data/cache     # K线/股票名缓存目录
+  request_timeout: 30
+
+monitor:
+  # 轮询间隔（秒），仅非交易日/交易时段外也轮询但无信号时请配合 use_trading_time 控制
+  poll_interval_seconds: 60
+  kline_period: "1d"        # 评估策略所用的K线周期：1d/30m/60m 等
+  kline_count: 120          # 拉取的K线根数（足够计算 MA60 等长均线）
+  run_strategies: true      # 是否在监控中运行购买策略(产生买入信号)
+  run_alerts: true          # 是否运行价格预警规则
+  # 仅在交易时段内才真正取价与预警（可显著节省请求配额）
+  only_trading_hours: true
+
+strategy:
+  # see config/watchlist.yaml
+  # 策略是否在每次 tick 计算；回测时不受此限制
+  enabled: true
+
+# ---- 通知 ----
+notify:
+  # 至少启用一个，否则预警只写日志不发送
+  enabled: false
+  channels:                # 列表：可同时启用多个渠道
+    - name: email
+      level: info
+    # - name: console     # 调试用：输出到控制台/日志
+  # 同一 (股票x规则) 冷却时间（秒），避免高频重复轰炸
+  dedupe_cooldown_seconds: 300
+
+# ---- 回测 ----
+backtest:
+  period: "1d"
+  commission: 0.0003      # 佣金率
+  min_commission: 5.0   # 最低佣金(元)
+  stamp_tax: 0.0005 # 印花税(卖出)
+  slippage: 0.0016 # 滑点(单边比例)
+  position_pct: 1.0   # 每次信号投入资金占总资金比例(0~1)
+  max_positions: 5     # 最大同时持仓数
+  starting_cash: 100000
+  report_dir: data/backtest
+
+# ---- 日志 ----
+logging:
+  level: INFO            # DEBUG/INFO/WARNING/ERROR
+  file: logs/stock-monitor.log

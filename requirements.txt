@@ -1,0 +1,12 @@
+# ---- 核心 ----
+sharetop>=0.1.0
+pandas>=1.5
+PyYAML>=6.0
+APScheduler>=3.10
+python-dotenv>=1.0
+
+# ---- 开发/测试 ----
+pytest>=7.0
+
+# ---- 可选 ----
+# matplotlib>=3.6   # 回测曲线绘图（不装则自动跳过绘图）

@@ -1,0 +1,31 @@
+# ======== 购买策略配置 ========
+# 每个条目注册一个策略。name 必须能匹配 app/strategy 的注册表。
+# enabled: false 的条目在监控中不执行，但回测仍可用（命令行 --strategy 显式指定）。
+# 一个自选股可以用多个策略叠加（多空信号取最先买），也可用 stock_strategies 指定某只股票专用策略。
+
+strategies:
+  - name: ma_cross
+    enabled: true
+    params:
+      fast: 5        # 快线 MA 周期
+      slow: 20       # 慢线 MA 周期
+
+  - name: rsi_oversold
+    enabled: true
+    params:
+      period: 14          # RSI 周期
+      oversold: 30        # 低于该值触发买入
+      lookback: 5         # 从 oversold 下方回升(rsi 上穿 oversold)才算信号
+
+  - name: breakout
+    enabled: false
+    params:
+      nday: 20            # 突破近 N 日高/低
+      tolerance: 0.005    # 允许突破的误差比例(容错)
+
+# 指定某只股票仅用哪些策略（可留空，全部回退到上方全局 strategies）
+# 结构示例：
+# stock_strategies:
+#   - ts_code: 600519.SH
+#     strategies: [ma_cross]
+stock_strategies:
