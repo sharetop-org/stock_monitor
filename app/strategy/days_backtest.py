@@ -5,6 +5,47 @@ import pandas as pd
 from app.datasource.sharetop_source import get_share_client as get_client
 
 
+def _disp_width(s):
+    """字符的显示宽度: CJK 全角字符按 2 列宽计算(否则中文列标题会和 ASCII 内容错位)。"""
+    w = 0
+    for ch in str(s):
+        o = ord(ch)
+        if (0x1100 <= o <= 0x115F or o == 0x2329 or o == 0x232A
+                or (0x2E80 <= o <= 0xA4CF and o != 0x303F)
+                or (0xAC00 <= o <= 0xD7A3)
+                or (0xF900 <= o <= 0xFAFF)
+                or (0xFE10 <= o <= 0xFE19)
+                or (0xFE30 <= o <= 0xFE6F)
+                or (0xFF00 <= o <= 0xFF60) or (0xFFE0 <= o <= 0xFFE6)
+                or (0x20000 <= o <= 0x2FFFD) or (0x30000 <= o <= 0x3FFFD)):
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def to_aligned_table(df):
+    """把 DataFrame 转为『标题与内容逐列对齐』的表格文本。
+
+    各列内部按显示宽度(全角=2)居中对齐, 列之间用 3 个空格分隔,
+    保证中英文混合时表头与数据一一对齐。
+    """
+    rows = [[str(c) for c in df.columns]] + \
+        [[str(x) for x in r] for r in df.itertuples(index=False)]
+    ncol = len(df.columns)
+    widths = [max(_disp_width(rows[r][i]) for r in range(len(rows)))
+              for i in range(ncol)]
+    lines = []
+    for r in rows:
+        cells = []
+        for i in range(ncol):
+            pad = widths[i] - _disp_width(r[i])
+            left = pad // 2
+            cells.append(" " * left + r[i] + " " * (pad - left))
+        lines.append("   ".join(cells))
+    return "\n".join(lines)
+
+
 def prep_adj(d):
     d = d.copy()
     d["trade_time"] = pd.to_datetime(d["trade_time"])
@@ -295,7 +336,7 @@ def run_with_client(client, symbols, low_days=1250, buy_amount=10000.0,
                     "总收益率(%)", "复合年化(%)", "胜率(%)", "盈亏比", "最大回撤(%)"]
     sell_desc = f"收盘达到{high_days_show}日新高卖出" if high_days_show else "只买不卖"
     print(f"策略: 过去{low_days}个交易日新低, 每次买入 {int(buy_amount):,}元(买不起一手则买一手), 卖出规则={sell_desc}, XIRR=复合年化收益率")
-    print(show.to_string(index=False, justify="center"))
+    print(to_aligned_table(show))
 
     # 逐行一一对应打印, 彻底避免列错位
     print("\n===== 单只明细(键值一一对应) =====")
@@ -314,10 +355,10 @@ def run_with_client(client, symbols, low_days=1250, buy_amount=10000.0,
         print(f"  最大回撤    : {r['max_drawdown']*100:.2f}%")
         if r["detail"] is not None and not r["detail"].empty:
             print("  买入明细(时间 + 前复权价):")
-            print(r["detail"].to_string(index=False, justify="center"))
+            print("  " + to_aligned_table(r["detail"]).replace("\n", "\n  "))
         if r["trades"] is not None and not r["trades"].empty:
             print("  每笔交易盈亏明细(卖出日=今日 表示仍持有):")
-            print(r["trades"].to_string(index=False, justify="center"))
+            print("  " + to_aligned_table(r["trades"]).replace("\n", "\n  "))
         print()
 
     print("\n说明:")
