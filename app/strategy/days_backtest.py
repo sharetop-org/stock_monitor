@@ -1,14 +1,8 @@
-from sharetop import ShareTop
-
 import numpy as np
 import pandas as pd
 
-
-def get_client() -> ShareTop:
-    """构建 ShareTop 客户端。token 优先取环境变量 SHARETOP_TOKEN, 缺省用旧硬编码回退。"""
-    import os
-    return ShareTop(token=os.environ.get(
-        "SHARETOP_TOKEN", "6d5876bf73eb249df43a1748a197798cad3ef3b3ed5dc528de"))
+# ShareTop client 统一走项目数据源共享工厂 app/datasource/sharetop_source.py
+from app.datasource.sharetop_source import get_share_client as get_client
 
 
 def prep_adj(d):
@@ -85,9 +79,9 @@ def backtest(client, symbol, window_start=None, low_days=1250,
     name = get_name(client, symbol)
 
     qjq = prep_adj(client.klines.get_history_data(symbol, period="d",
-                                                  count=50000, adjust="before", as_df=True))
+                                                  count=60000, adjust="before", as_df=True))
     bfq = prep_adj(client.klines.get_history_data(symbol, period="d",
-                                                  count=50000, adjust="normal", as_df=True))
+                                                  count=60000, adjust="normal", as_df=True))
 
     # 回测起点：默认取该股上市日(首根K线时间)
     if window_start is None:

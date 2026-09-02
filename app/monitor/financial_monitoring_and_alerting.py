@@ -31,18 +31,19 @@ import pandas as pd
 
 # 邮件发送统一复用项目 notifier：app/alert/notifier/mail_sender_new.py
 from app.alert.notifier.mail_sender_new import MailNew
+# ShareTop client 统一走项目数据源共享工厂 app/datasource/sharetop_source.py
+from app.datasource.sharetop_source import get_share_client as get_client
 
-
-# 默认行情 token(可被环境变量 SHARETOP_TOKEN 覆盖)
-SHARETOP_TOKEN = os.environ.get(
-    "SHARETOP_TOKEN", "6d5876bf73eb249df43a1748a197798cad3ef3b3ed5dc528de")
 
 # 状态文件: 记录已对每只股票报警过的低位价, 避免重复发信
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alert_state.json")
 
+# 每股监测之间的停顿秒数, 降低 ShareTop 访问频次限流被误判成"数据不足"的概率
+PAUSE = 2.0
 
-def get_client() -> ShareTop:
-    return ShareTop(token=SHARETOP_TOKEN)
+# 当某股扫描返回"数据不足(?)"时, 额外重试次数与停顿秒数(比常规 PAUSE 更长)
+INSUFFICIENT_RETRIES = 3
+RETRY_SLEEP = 10.0
 
 
 def prep_adj(d: pd.DataFrame) -> pd.DataFrame:
@@ -125,17 +126,36 @@ def check_low(client: ShareTop, symbol: str, windows: list) -> dict:
       below_pct : 最新价相对今日更早前历史最低价的涨跌幅(%)
       off_high_pct : 区间最低相对历史最高的涨跌幅(%)
     """
-    qjq = prep_adj(client.klines.get_history_data(
-        symbol, period="d", count=6000, adjust="before", as_df=True))
+    # 历史K线：ShareTop 风控/限流时会返回非 DataFrame 或缺列的数据, 容错为数据不足。
+    # 遇到"访问频次超限"自动退避重试，避免轮询时把限流误判成无权限/无数据。
+    def _hist_data(adjust: str, retries: int = 3):
+        d = None
+        for _ in range(retries):
+            try:
+                d = client.klines.get_history_data(
+                    symbol, period="d", count=6000, adjust=adjust, as_df=True)
+            except Exception:
+                return pd.DataFrame()
+            if isinstance(d, str) and ("频次超限" in d or "频繁" in d):
+                time.sleep(5 + _ * 3)             # 退避后重试
+                continue
+            break
+        if not isinstance(d, pd.DataFrame) or d.empty:
+            return pd.DataFrame()
+        if not {"trade_time", "close", "open", "high", "low"}.issubset(d.columns):
+            return pd.DataFrame()
+        return d
+
+    qjq = _hist_data("before")
     if qjq.empty:
         return {"symbol": symbol, "name": get_name(client, symbol),
                 "status": "insufficient", "hit": False, "windows": []}
+    qjq = prep_adj(qjq)
 
     # 以实时行情最新 close 作为最新价，追加为最新一根K线，再与历史日K对比
     rt = get_realtime_quote(client, symbol)
     rt_close = rt.get("close")
     rt_date = rt.get("trade_date")
-    print("rt_close:", rt_close, "rt_date:", rt_date)
     if rt_close is not None:
         _last = pd.to_datetime(qjq["trade_time"].iloc[-1])
         row_time = pd.Timestamp(rt_date) if rt_date else _last
@@ -234,7 +254,7 @@ def should_alert(symbol: str, latest_close: float, state: dict) -> bool:
 
 
 
-def notify_hits(rows, windows, state, receiver: str) -> int:
+def notify_hits(rows, state, receiver: str) -> int:
     """组装命中的报警邮件并发信; 记录去重状态。返回实际发送数量。"""
     to_alert = [r for r in rows
                 if r.get("status") == "hit"
@@ -243,7 +263,10 @@ def notify_hits(rows, windows, state, receiver: str) -> int:
         return 0
 
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    lab = "/".join(str(w) for w in windows)
+    # 主题里的窗口标签取自实际命中的窗口(每股窗口可不同)
+    lab = "/".join(str(x["window"])
+                   for x in sorted({x["window"] for r in to_alert
+                                    for x in r["windows"] if x.get("hit")}))
     subject = f"[低位报警] {len(to_alert)} 只股票触及 {lab} 日低位 {stamp}"
 
     def _kv(label, value, value_color=""):
@@ -347,12 +370,11 @@ def notify_hits(rows, windows, state, receiver: str) -> int:
     return len(to_alert)
 
 
-def run(symbols: list, windows: list, receiver: str,
-        interval: int = 0, state_path: str = None) -> None:
-    """持续监测指定股票价格是否触底, 命中则邮件报警(阻塞轮询)。
+def run(stocks: list, receiver: str, interval: int = 0, state_path: str = None) -> None:
+    """持续监测股票价格是否触底, 命中则邮件报警(阻塞轮询)。
 
-    symbols    : 股票代码列表
-    windows    : 低位观察窗口(交易日天数)列表
+    stocks     : 列表, 每个元素为 (symbol, windows_list)。windows_list 为该股
+                 各自的新低观察窗口(交易日天数, 如 [250, 60]), 可每股不同。
     receiver   : 收件邮箱
     interval   : 轮询间隔秒, 0=只跑一次即退出
     state_path : 去重状态文件路径(默认 STATE_FILE)
@@ -362,18 +384,30 @@ def run(symbols: list, windows: list, receiver: str,
 
     while True:
         state = load_state(state_path)
-        rows = [check_low(client, s, windows) for s in symbols]
+        rows = []
+        for s, ws in stocks:
+            r = check_low(client, s, ws)
+            attempt = 0
+            # 出现"数据不足(?)"可能是 ShareTop 限流/瞬时故障, 长停顿后多试几次
+            while r["status"] == "insufficient" and attempt < INSUFFICIENT_RETRIES:
+                attempt += 1
+                time.sleep(RETRY_SLEEP)
+                print(f"  {r.get('name', s)}({s}) 数据不足, 等待 {RETRY_SLEEP}s 后第 {attempt} 次重试")
+                r = check_low(client, s, ws)
+            rows.append(r)
+            time.sleep(PAUSE)   # 每股之间停顿, 避免触发 ShareTop 访问频次限流
         for r in rows:
             hit_ws = [x for x in r["windows"] if x.get("hit")]
             if r["status"] == "insufficient":
-                print(f"  {r['name']}({r['symbol']}) 数据不足({r['ihist']}至今), 各窗口跳过")
+                since = r.get("ihist", "?")
+                print(f"  {r['name']}({r['symbol']}) 数据不足({since}至今), 各窗口跳过")
             elif r["status"] == "no":
                 print(f"  {r['name']}({r['symbol']}) 现价 {r['latest_close']:.2f}, 未触任何窗口低位")
             else:
                 lab = "/".join(f"{x['window']}日" for x in hit_ws)
                 print(f"  {r['name']}({r['symbol']}) 现价 {r['latest_close']:.2f} 已触 {lab} 低位")
 
-        n = notify_hits(rows, windows, state, receiver)
+        n = notify_hits(rows, state, receiver)
         # save_state(state_path, state)   # 去重状态落盘, 保证跨进程也只在新低价时发信
         stamp = datetime.now().strftime("%H:%M:%S")
         if n:
@@ -388,9 +422,9 @@ def run(symbols: list, windows: list, receiver: str,
 def main():
     parser = argparse.ArgumentParser(description="创N日新低 邮箱报警(监测)")
     parser.add_argument("--symbols", type=str, default=None,
-                        help="股票代码, 多个英文逗号分隔, 如 600036.SH,600519.SH")
-    parser.add_argument("--windows", type=str, default="1250",
-                        help="低位观察窗口(交易日天数), 多个英文逗号分隔, 默认 1250(约5年×250交易日)")
+                        help="股票代码, 多个英文逗号分隔, 如 600036.SH,600519.SH; 缺省读 watchlist.yaml")
+    parser.add_argument("--windows", type=str, default=None,
+                        help="全局兜底观察窗口(交易日天数), 逗号分隔; 未配置该股则用此值, 再缺省 1250")
     parser.add_argument("--to", type=str, default=os.environ.get("MAIL_ALERT_TO", ""),
                         help="收件邮箱, 或设置环境变量 MAIL_ALERT_TO")
     parser.add_argument("--interval", type=int, default=0,
@@ -398,21 +432,23 @@ def main():
     parser.add_argument("--state", type=str, default=STATE_FILE, help="去重状态文件路径")
     args = parser.parse_args()
 
-    symbols = [s.strip() for s in (args.symbols or "").split(",") if s.strip()]
-    if not symbols:
-        symbols = [s.strip() for s in
-                   os.environ.get("WATCH_SYMBOLS", "600036.SH").split(",") if s.strip()]
-    if not symbols:
-        parser.error("请用 --symbols='600054.SH,600519.SH' 指定要监测的股票代码")
+    # 股票列表只读 watchlist.yaml(低点监测专用合并清单)，其次 --symbols 覆盖
+    from app.config import load_config
 
-    windows = sorted({int(x.strip()) for x in args.windows.split(",") if x.strip()})
-    if not windows:
-        parser.error("请用 --windows='360,60' 指定观察窗口(交易日天数)")
+    cfg = load_config()
+    cli_symbols = [s.strip() for s in (args.symbols or "").split(",") if s.strip()]
+    cli_windows = None
+    if args.windows:
+        cli_windows = sorted({int(x) for x in args.windows.split(",") if x.strip()})
+    # 每股窗口独立: watchlist 该股 low_days/windows > --windows 兜底 > 默认 1250
+    specs = cfg.low_alert_specs(cli_symbols or None, windows_fallback=cli_windows)
+    if not specs:
+        parser.error("watchlist.yaml 无股票且未指定 --symbols")
 
     if not args.to:
         parser.error("请用 --to 或环境变量 MAIL_ALERT_TO 指定收件邮箱")
 
-    run(symbols, windows, args.to, interval=args.interval, state_path=args.state)
+    run(specs, args.to, interval=args.interval, state_path=args.state)
 
 
 if __name__ == "__main__":

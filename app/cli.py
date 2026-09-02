@@ -85,20 +85,20 @@ def cmd_low_alert(args) -> None:
     from .monitor.financial_monitoring_and_alerting import run
 
     cfg = load_config()
-    symbols = [s.strip() for s in (args.symbols or "").split(",") if s.strip()] \
-        or cfg.watch_symbols
-    if not symbols:
-        raise SystemExit("请用 --symbols 指定股票代码(或先配置 watchlist.yaml)")
-
-    windows = sorted({int(x.strip()) for x in (args.windows or "").split(",") if x.strip()})
-    if not windows:
-        windows = [360, 60]
+    # 低点监测用独立清单(合并 symbols: 与 stocks:, 每股窗口单独配置)
+    cli_symbols = [s.strip() for s in (args.symbols or "").split(",") if s.strip()]
+    cli_windows = None
+    if args.windows:
+        cli_windows = sorted({int(x) for x in args.windows.split(",") if x.strip()})
+    specs = cfg.low_alert_specs(cli_symbols or None, windows_fallback=cli_windows)
+    if not specs:
+        raise SystemExit("watchlist.yaml 无股票且未指定 --symbols")
 
     receiver = args.to or os.environ.get("MAIL_ALERT_TO", "")
     if not receiver:
         raise SystemExit("请用 --to 或环境变量 MAIL_ALERT_TO 指定收件邮箱")
 
-    run(symbols, windows, receiver, interval=args.interval)
+    run(specs, receiver, interval=args.interval)
 
 
 def cmd_low_backtest(args) -> None:
@@ -157,7 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     la = sub.add_parser("low-alert", help="创N日新低监测并邮件报警")
     la.add_argument("--symbols", default=None, help="股票代码, 逗号分隔")
-    la.add_argument("--windows", default="360,60", help="低位观察窗口(交易日天数), 逗号分隔, 默认 360,60")
+    la.add_argument("--windows", default=None, help="全局兜底窗口(交易日天数), 逗号分隔; 未配置该股则用此值, 再缺省 1250")
     la.add_argument("--to", default=None, help="收件邮箱, 或环境变量 MAIL_ALERT_TO")
     la.add_argument("--interval", type=int, default=0, help="轮询间隔秒, 0=只跑一次")
     la.set_defaults(func=cmd_low_alert)

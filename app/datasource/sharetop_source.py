@@ -23,8 +23,30 @@ from .base import BaseDataSource
 
 log = logging.getLogger(__name__)
 
-# ShareTop 指标中常见的"涨跌幅"字段名（外层或 ext 里）
+# ShareTop 匹配中常见的"涨跌幅"字段名（外层或 ext 里）
 _PCT_KEYS = ("change_pct", "pct_chg", "change_rate")
+
+
+def get_share_client(
+    timeout: float = 30.0,
+    cache_dir: Optional[str] = None,
+    require_token: bool = True,
+) -> ShareTop:
+    """统一构建 ShareTop 客户端，token 各取本项目 .env 的 `SHARETOP_TOKEN`。
+
+    - 先 `app.config.load_config()` 加载项目根 `.env`，再读环境变量，避免各处散落硬编码。
+    - `require_token=True`（默认）时，未配置 token 抛清晰报错；设 False 则传空 token，
+      由 SDK 走其默认行为（一般仅用于只读公开接口的降级场景）。
+    - timeout/cache_dir 与 `ShareTopDataSource` 保持一致，供复用方获得一致的连接行为。
+    """
+    from ..config import load_config
+
+    load_config()                                   # 加载 .env → os.environ
+    token = os.environ.get("SHARETOP_TOKEN")
+    if require_token and not token:
+        raise SystemExit(
+            "缺少 SHARETOP_TOKEN：请在项目根 .env 中配置, 参考 .env.example / config/secrets.yaml")
+    return ShareTop(token=token, timeout=timeout, cache_dir=cache_dir)
 
 
 @DATA_SOURCES.register("sharetop")
