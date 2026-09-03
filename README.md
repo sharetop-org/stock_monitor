@@ -171,6 +171,12 @@ python -m app.cli screen-backtest --pre-year 2000 --limit 100
 
 # 换口径：收盘突破 1250 日新高就卖出（含实际兑现盈亏）
 python -m app.cli screen-backtest --high-days 1250 --limit 10
+
+# 全量扫描 2008年之前上市的公司，1250天低位买入，1250内高位卖出
+python -m app.cli screen-backtest --low-days 1250 --high-days 1250
+
+# 把逐股结果保存为 Excel（默认不保存，传入 --excel 才落盘）
+python -m app.cli screen-backtest --low-days 1250 --limit 100 --excel data/screen_backtest_result.xlsx
 ```
 
 **参数**：
@@ -182,6 +188,7 @@ python -m app.cli screen-backtest --high-days 1250 --limit 10
 | `--high-days` | 收盘突破 N 日新高即清仓（只买不卖时为 `None`）；缺省不传 = 只买不卖 |
 | `--pre-year` | 只统计**早于该年上市**的股票，默认 `2008` |
 | `--limit` | 最多扫描多少只；先小批试跑，默认全量 |
+| `--excel` | 把逐股结果导出到该 Excel 文件，表头 `symbol / name / list_year / 利润(万) / 总收益% / 复合年化% / 胜率%`（工作表名"回测结果"）；**缺省不保存** |
 
 **输出物说明**（以此格式为例）：
 - **三盈占比**：`获利金额>0 / 总收益率>0 / 复合年化>0` 各自计数 + 「三者都>0」的只数及占（回测成功数）的比例。

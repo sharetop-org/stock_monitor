@@ -99,10 +99,47 @@ def _summarise(df: pd.DataFrame, total: int, failed: int) -> dict:
     }
 
 
+# 导出 Excel 时的列与取值口径（按需求给定表头）
+EXPORT_COLS = ["symbol", "name", "list_year", "利润(万)", "总收益%", "复合年化%", "胜率%"]
+
+
+def _export_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """把逐股汇总构造成符合导出表头的 DataFrame（默认不导出，传 export_path 才落盘）。"""
+    out = pd.DataFrame({
+        "symbol": df["symbol"],
+        "name": df["name"],
+        "list_year": df["list_year"],
+        "利润(万)": (df["profit"] / 1e4).round(2),
+        "总收益%": (df["ret"] * 100).round(2),
+        "复合年化%": (df["annual"] * 100).round(2),
+        "胜率%": (df["win_rate"] * 100).round(2),
+    })
+    return out[EXPORT_COLS]
+
+
+def export_excel(df: pd.DataFrame, path: str) -> str:
+    """把逐股结果写入 Excel 文件，返回写入路径。表头见 EXPORT_COLS。"""
+    if df is None or df.empty:
+        raise ValueError(f"没有可导出的回测结果, 未写入 {path}")
+    frame = _export_frame(df)
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        frame.to_excel(writer, index=False, sheet_name="回测结果")
+        # 简单加宽首列, 便于查看
+        ws = writer.sheets["回测结果"]
+        for col, width in zip("ABCDEFG", (12, 12, 8, 10, 10, 10, 8)):
+            ws.column_dimensions[col].width = width
+    return path
+
+
 def run_all(low_days: int = 1250, buy_amount: float = 10000.0,
             high_days: Optional[int] = None, pre_2008_year: int = 2008,
-            limit: Optional[int] = None) -> pd.DataFrame:
-    """扫描早于 pre_2008_year 上市的股票, 打印盈利占比, 返回逐股汇总 DataFrame。"""
+            limit: Optional[int] = None,
+            export_path: Optional[str] = None) -> pd.DataFrame:
+    """扫描早于 pre_2008_year 上市的股票, 打印盈利统计, 返回盈利汇总 DataFrame。
+
+    export_path: 非空时把逐股结果（列: symbol/name/list_year/利润(万)/总收益%/
+                 复合年化%/胜率%）写入该 Excel；默认 None = 不保存。
+    """
     client = get_client()
     try:
         eligible = fetch_pre_year_list(client, pre_2008_year)
@@ -134,6 +171,10 @@ def run_all(low_days: int = 1250, buy_amount: float = 10000.0,
         df = pd.DataFrame([r for r in rows if "err" not in r])
         s = _summarise(df, total, failed=total - ok)
         _emit_summary(df, s)
+        if export_path:
+            p = export_excel(df, export_path)
+            print(f"\n已保存逐股结果到 Excel: {p} "
+                  f"（表头: symbol / name / list_year / 利润(万) / 总收益% / 复合年化% / 胜率%）")
         return df
     finally:
         try:
