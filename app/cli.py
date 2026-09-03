@@ -125,6 +125,17 @@ def cmd_low_backtest(args) -> None:
         high_days=args.high_days)
 
 
+def cmd_screen_prefetch_backtest(args) -> None:
+    """全市场2008年(可配)前上市股票的 N日新低回测, 统计盈利占比。
+
+    复用 app.strategy.screen_prefetch_backtest.run_all。"""
+    from .strategy.screen_prefetch_backtest import run_all
+
+    run_all(low_days=args.low_days, buy_amount=args.buy_amount,
+            high_days=args.high_days, pre_2008_year=args.pre_year,
+            limit=args.limit)
+
+
 def cmd_backtest(args) -> None:
     from .core.registry import STRATEGIES
 
@@ -185,6 +196,14 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--end", default=None)
     b.add_argument("--plot", default=None)
     b.set_defaults(func=cmd_backtest)
+
+    scr = sub.add_parser("screen-backtest", help="全市场早于某年的股票 N日新低回测, 统计盈利占比")
+    scr.add_argument("--low-days", type=int, default=1250, help="低位回看窗口(交易日), 默认 1250")
+    scr.add_argument("--buy-amount", type=float, default=10000.0, help="单次买入金额, 默认 10000")
+    scr.add_argument("--high-days", type=int, default=None, help="收盘价突破N日新高即卖出; 缺省只买不卖")
+    scr.add_argument("--pre-year", type=int, default=2008, help="上市早于该年的股票, 默认 2008")
+    scr.add_argument("--limit", type=int, default=None, help="最多扫描多少只(先小批试跑, 默认全量)")
+    scr.set_defaults(func=cmd_screen_prefetch_backtest)
     return p
 
 

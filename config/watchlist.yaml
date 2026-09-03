@@ -50,6 +50,7 @@ stocks:
   - name: 宁沪高速
     ts_code: 600377.SH        # 未配置窗口 → 默认 1250
     low_days: 750
+    high_days: 750
   - name: 美的集团
     ts_code: 000333.SZ        # 未配置窗口 → 默认 1250
     low_days: 500
