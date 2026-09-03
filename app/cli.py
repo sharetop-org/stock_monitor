@@ -80,7 +80,7 @@ def cmd_monitor(args) -> None:
 
 
 def cmd_low_alert(args) -> None:
-    """创N日新低监测并邮件报警(复用 app.monitor.financial_monitoring_and_alerting)。
+    """N日新低/新高监测并邮件报警(复用 app.monitor.financial_monitoring_and_alerting)。
     邮件发送走项目统一 notifier: app.alert.notifier.mail_sender_new.MailNew。"""
     from .monitor.financial_monitoring_and_alerting import run
 
@@ -91,6 +91,13 @@ def cmd_low_alert(args) -> None:
     if args.windows:
         cli_windows = sorted({int(x) for x in args.windows.split(",") if x.strip()})
     specs = cfg.low_alert_specs(cli_symbols or None, windows_fallback=cli_windows)
+    # 新高监测: 每股 high_days > --high-days 兜底 > 默认 1250; 0 关闭
+    high_specs = None
+    if args.high_days is None:
+        high_specs = cfg.high_alert_specs(cli_symbols or None)
+    elif args.high_days > 0:
+        high_specs = cfg.high_alert_specs(cli_symbols or None,
+                                          window_fallback=args.high_days)
     if not specs:
         raise SystemExit("watchlist.yaml 无股票且未指定 --symbols")
 
@@ -98,7 +105,7 @@ def cmd_low_alert(args) -> None:
     if not receiver:
         raise SystemExit("请用 --to 或环境变量 MAIL_ALERT_TO 指定收件邮箱")
 
-    run(specs, receiver, interval=args.interval)
+    run(specs, receiver, interval=args.interval, high_specs=high_specs, state_path=args.state)
 
 
 def cmd_low_backtest(args) -> None:
@@ -155,11 +162,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("once", help="立即跑一次监控").set_defaults(func=cmd_once)
     sub.add_parser("monitor", help="启动定时轮询监控").set_defaults(func=cmd_monitor)
 
-    la = sub.add_parser("low-alert", help="创N日新低监测并邮件报警")
+    la = sub.add_parser("low-alert", help="监控N日新低/新高并邮件报警")
     la.add_argument("--symbols", default=None, help="股票代码, 逗号分隔")
-    la.add_argument("--windows", default=None, help="全局兜底窗口(交易日天数), 逗号分隔; 未配置该股则用此值, 再缺省 1250")
+    la.add_argument("--windows", default=None, help="低位全局兜底窗口(交易日天数), 逗号分隔; 未配置该股则用此值, 再缺省 1250")
+    la.add_argument("--high-days", type=int, default=None, help="新高全局兜底窗口(交易日), 缺省 1250; 每股可在 watchlist.yaml 配 high_days; 传 0 关闭新高监测")
     la.add_argument("--to", default=None, help="收件邮箱, 或环境变量 MAIL_ALERT_TO")
     la.add_argument("--interval", type=int, default=0, help="轮询间隔秒, 0=只跑一次")
+    la.add_argument("--state", default=None, help="去重状态文件路径(默认 alert_state.json)")
     la.set_defaults(func=cmd_low_alert)
 
     lb = sub.add_parser("low-backtest", help="过去N个交易日新低买入回测")

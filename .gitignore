@@ -1,5 +1,4 @@
 # ---- 敏感信息 / 本地数据 / 缓存 ----
-.env
 config/secrets.yaml
 data/
 logs/

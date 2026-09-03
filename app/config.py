@@ -79,6 +79,49 @@ class AppConfig:
             out.append((c, self.windows_for(c) or windows_fallback or [1250]))
         return out
 
+    def high_days_for(self, symbol: str, default: Optional[int] = None) -> Optional[int]:
+        """返回该股票在 watchlist.yaml `stocks` 中配置的"新高监测窗口"(交易日天数)。
+
+        写法：`high_days: 1250`（单个整数）。未匹配到该股票 / 未配置时返回 `default`。
+        """
+        for s in self.stocks:
+            if s.get("ts_code") != symbol:
+                continue
+            v = s.get("high_days")
+            if v is None:
+                break
+            try:
+                d = int(v)
+            except (TypeError, ValueError):
+                break
+            return d if d > 0 else default
+        return default
+
+    def high_alert_specs(
+        self,
+        symbols: Optional[List[str]] = None,
+        window_fallback: Optional[int] = None,
+    ) -> List[tuple]:
+        """新高监测(high-alert)专用监控清单。
+
+        - 仅对 `stocks:` 里的标的（或显式传入的 `symbols`）监测新高；
+        - 每股新高窗口 = 该股 `high_days` → `window_fallback` → 默认 1250；
+        - `window_fallback` 传 0 表示关闭该股的新高监测（返回空清单）。
+        - 返回 [(symbol, int窗口), ...]。
+        """
+        if symbols is None:
+            symbols = [s.get("ts_code") for s in self.stocks if s.get("ts_code")]
+        if window_fallback is not None and window_fallback <= 0:
+            return []
+        out: List[tuple] = []
+        for c in symbols or []:
+            c = (c or "").strip()
+            if not c or c in [x for x, _ in out]:
+                continue
+            w = self.high_days_for(c) or window_fallback or 1250
+            out.append((c, w))
+        return out
+
     def data_source_config(self) -> Dict[str, Any]:
         return self.settings.get("data_source", {})
 

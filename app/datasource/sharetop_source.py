@@ -43,6 +43,7 @@ def get_share_client(
 
     load_config()                                   # 加载 .env → os.environ
     token = os.environ.get("SHARETOP_TOKEN")
+    print("token===:", token)
     if require_token and not token:
         raise SystemExit(
             "缺少 SHARETOP_TOKEN：请在项目根 .env 中配置, 参考 .env.example / config/secrets.yaml")
