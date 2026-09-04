@@ -233,7 +233,7 @@ python scripts/test_source.py
 
 **原因**：ShareTop **历史K线静态接口按账号权限限制**，与复权方式（`before`/`after`/`none`）无关；当前账号未授权该接口时统一返回如上提示。`low-alert` 对此已做**优雅降级**——视为「数据不足」(`insufficient`)，不会崩溃。
 
-**解决**：按提示到公众号「浔海de小蔡仓」**升级权限**，生效后可跳过诊断：
+**解决**：按提示到公众号「浔溯de小仓鼠」**升级权限**，生效后可跳过诊断：
 ```bash
 D:/software/miniconda3/envs/py310/python.exe -c "
 from app.monitor.financial_monitoring_and_alerting import get_client, check_low
