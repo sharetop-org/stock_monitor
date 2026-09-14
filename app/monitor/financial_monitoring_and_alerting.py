@@ -19,6 +19,10 @@
 
 新低只在价格创出比上次报警更低的新低时才再次发信; 新高只在价格创出比上次报警更高的新高时
 才再次发信; 由同一状态文件各自去重, 避免反复轰炸。
+
+命中报警时, 会额外调用 sharetop getStockIndustryRank 接口, 把该股所属行业及各项行业排名
+(总市值/净利润/PE/PB/毛利率/净利率/ROE 排名、行业成分股数等)合并到报警邮件中, 便于判断
+其在行业内的位置; 接口异常时自动省略该部分, 不影响报警。
 """
 
 from sharetop import ShareTop
@@ -345,7 +349,92 @@ def should_alert(symbol: str, latest_close: float, state: dict) -> bool:
 
 
 
-def notify_hits(rows, state, receiver: str) -> int:
+# ---- 行业排名 (sharetop getStockIndustryRank) 合并到报警邮件 --------------------
+# (标签, 返回字段, 取值类型): 取值类型决定格式化展示方式
+_INDUSTRY_FIELDS = [
+    ("所属行业",          "industry_name",            "text"),
+    ("行业成分股数",      "industry_sum",             "num"),
+    ("总市值",            "market_capital",           "money_yi"),
+    ("总市值排名",        "market_capital_rank",      "rank"),
+    ("净利润",            "net_profit",               "money_yi"),
+    ("净利润排名",        "net_profit_rank",          "rank"),
+    ("市盈率(动)",        "pe_forward",               "num"),
+    ("市盈率排名",        "pe_forward_rank",          "rank"),
+    ("市净率",            "pb",                       "num"),
+    ("市净率排名",        "pb_rank",                  "rank"),
+    ("毛利率%",           "gross_profit_margin",      "num"),
+    ("毛利率排名",        "gross_profit_margin_rank", "rank"),
+    ("净利率%",           "net_profit_margin",        "num"),
+    ("净利率排名",        "net_profit_margin_rank",   "rank"),
+    ("加权ROE%",          "roe_weighted",             "num"),
+    ("加权ROE排名",       "roe_weighted_rank",        "rank"),
+    ("股息率%",           "divident_ratio",           "num"),
+]
+
+
+def get_industry_rank(client, symbol: str) -> dict:
+    """调用 sharetop getStockIndustryRank 接口, 返回该股单行的行业排名参数字典。
+
+    接口失败(网络/未安装/权限等)时返回空字典, 调用方据此省略该部分展示。
+    """
+    try:
+        df = client.quotes.get_stock_industry_rank(symbol=symbol, as_df=True)
+    except Exception as e:                       # 接口缺失/异常 一律降级
+        print(f"  {symbol} 获取行业排名失败: {e}")
+        return {}
+    if df is None or getattr(df, "empty", True):
+        return {}
+    row = df.iloc[0]
+    out = {}
+    for c in df.columns:
+        try:
+            v = row[c]
+        except Exception:
+            continue
+        if v is None:
+            continue
+        if isinstance(v, float) and v != v:      # NaN
+            continue
+        out[c] = v
+    return out
+
+
+def _industry_rank_rows(rank: dict) -> list:
+    """把 getStockIndustryRank 返回整理成 [(标签, 展示值), ...], 供邮件文本与HTML共用。"""
+    if not rank:
+        return []
+
+    def _fnum(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    total = _fnum(rank.get("industry_sum"))
+    rows = []
+    for label, key, kind in _INDUSTRY_FIELDS:
+        v = rank.get(key)
+        if v is None:
+            continue
+        fv = _fnum(v)
+        if kind == "text":
+            val = str(v)
+        elif kind == "money_yi":
+            val = "—" if fv is None else f"{fv / 1e8:,.2f} 亿"
+        elif kind == "rank":
+            if fv is None:
+                val = "—"
+            elif total:
+                val = f"第 {fv:.0f} / {total:.0f} 名"
+            else:
+                val = f"第 {fv:.0f} 名"
+        else:                                    # num
+            val = "—" if fv is None else f"{fv:.2f}"
+        rows.append((label, val))
+    return rows
+
+
+def notify_hits(rows, state, receiver: str, client=None) -> int:
     """组装命中的报警邮件并发信; 记录去重状态。返回实际发送数量。"""
     to_alert = [r for r in rows
                 if r.get("status") == "hit"
@@ -355,8 +444,8 @@ def notify_hits(rows, state, receiver: str) -> int:
 
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     # 主题里的窗口标签取自实际命中的窗口(每股窗口可不同)
-    lab = "/".join(str(x["window"])
-                   for x in sorted({x["window"] for r in to_alert
+    lab = "/".join(str(w)
+                   for w in sorted({x["window"] for r in to_alert
                                     for x in r["windows"] if x.get("hit")}))
     subject = f"[低位报警] {len(to_alert)} 只股票触及 {lab} 日低位 {stamp}"
 
@@ -366,6 +455,13 @@ def notify_hits(rows, state, receiver: str) -> int:
                 f"<td style='padding:9px 14px;border-bottom:1px solid #eee;background:#f7f8fa;"
                 f"width:26%;font-weight:bold;color:#555;'>{label}</td>"
                 f"<td style='padding:9px 14px;border-bottom:1px solid #eee;{value_color};'>{value}</td>"
+                "</tr>")
+
+    def _sec(title):
+        """板块标题：跨列、底色分隔, 用于在键值表内插入一个小分组。"""
+        return ("<tr>"
+                "<td colspan='2' style='padding:8px 14px;background:#ecf0f1;"
+                "font-weight:bold;color:#2c3e50;'>" + title + "</td>"
                 "</tr>")
 
     text_rows = []
@@ -409,6 +505,10 @@ def notify_hits(rows, state, receiver: str) -> int:
             f"PB={_num(deep.get('pb'))}, "
             f"涨跌幅={'—' if _cp is None else f'{_cp:+.2f}%'}")
 
+        ind_rows = _industry_rank_rows(get_industry_rank(client, r["symbol"]) if client else {})
+        if ind_rows:
+            text_rows.append("  行业排名: " + "; ".join(f"{lab} {val}" for lab, val in ind_rows))
+
         hit_ws_html = f"[{ws_detail}]" if ws_detail else ""
         kv_rows = "".join([
             _kv("代码", f"<b style='{color}'>{r['symbol']}</b>"),
@@ -434,6 +534,9 @@ def notify_hits(rows, state, receiver: str) -> int:
             _kv("市盈率(TTM)", _num(deep.get("ttm_pe"))),
             _kv("市净率", _num(deep.get("pb"))),
         ])
+        if ind_rows:
+            kv_rows += _sec("💼 行业排名")
+            kv_rows += "".join(_kv(lab, val) for lab, val in ind_rows)
         cards.append(
             "<div style=\"border:1px solid #e2e2e2;border-radius:6px;margin:14px 0;overflow:hidden;\">"
             f"<div style=\"background:#2c3e50;color:#fff;padding:10px 14px;font-weight:bold;\">"
@@ -461,7 +564,7 @@ def notify_hits(rows, state, receiver: str) -> int:
     return len(to_alert)
 
 
-def notify_high_hits(rows, state, receiver: str) -> int:
+def notify_high_hits(rows, state, receiver: str, client=None) -> int:
     """组装命中的新高报警邮件并发信; 记录去重状态。返回实际发送数量。"""
     to_alert = [r for r in rows
                 if r.get("status") == "hit"
@@ -480,6 +583,13 @@ def notify_high_hits(rows, state, receiver: str) -> int:
                 f"<td style='padding:9px 14px;border-bottom:1px solid #eee;background:#f7f8fa;"
                 f"width:26%;font-weight:bold;color:#555;'>{label}</td>"
                 f"<td style='padding:9px 14px;border-bottom:1px solid #eee;{value_color};'>{value}</td>"
+                "</tr>")
+
+    def _sec(title):
+        """板块标题：跨列、底色分隔, 用于在键值表内插入一个小分组。"""
+        return ("<tr>"
+                "<td colspan='2' style='padding:8px 14px;background:#ecf0f1;"
+                "font-weight:bold;color:#2c3e50;'>" + title + "</td>"
                 "</tr>")
 
     def _fnum(v):
@@ -521,6 +631,10 @@ def notify_high_hits(rows, state, receiver: str) -> int:
             f"PB={_num(deep.get('pb'))}, "
             f"涨跌幅={'—' if _cp is None else f'{_cp:+.2f}%'}")
 
+        ind_rows = _industry_rank_rows(get_industry_rank(client, r["symbol"]) if client else {})
+        if ind_rows:
+            text_rows.append("  行业排名: " + "; ".join(f"{lab} {val}" for lab, val in ind_rows))
+
         kv_rows = "".join([
             _kv("代码", f"<b style='{color}'>{r['symbol']}</b>"),
             _kv("名称", r["name"]),
@@ -547,6 +661,9 @@ def notify_high_hits(rows, state, receiver: str) -> int:
             _kv("市盈率(TTM)", _num(deep.get("ttm_pe"))),
             _kv("市净率", _num(deep.get("pb"))),
         ])
+        if ind_rows:
+            kv_rows += _sec("💼 行业排名")
+            kv_rows += "".join(_kv(lab, val) for lab, val in ind_rows)
         cards.append(
             "<div style=\"border:1px solid #e2e2e2;border-radius:6px;margin:14px 0;overflow:hidden;\">"
             f"<div style=\"background:#1e8449;color:#fff;padding:10px 14px;font-weight:bold;\">"
@@ -642,8 +759,8 @@ def run(stocks: list, receiver: str, interval: int = 0, state_path: str = None,
                 print(f"  {r['name']}({r['symbol']}) 现价 {r['latest_close']:.2f} 已创 {r['window']} 日新高 "
                       f"(前一高 {r['prior_hist_high']:.2f})")
 
-        n_low = notify_hits(rows, state, receiver)
-        n_high = notify_high_hits(high_rows, state, receiver)
+        n_low = notify_hits(rows, state, receiver, client)
+        n_high = notify_high_hits(high_rows, state, receiver, client)
         save_state(state_path, state)   # 去重状态落盘, 保证跨进程也不重复发信
         stamp = datetime.now().strftime("%H:%M:%S")
         if n_low or n_high:
