@@ -98,7 +98,6 @@ def _summarise(df: pd.DataFrame, total: int, failed: int) -> dict:
         "all3_pct": (all3 / ok * 100) if ok else 0.0,
     }
 
-
 # 导出 Excel 时的列与取值口径（按需求给定表头）
 EXPORT_COLS = ["symbol", "name", "list_year", "利润(万)", "总收益%", "复合年化%", "胜率%"]
 

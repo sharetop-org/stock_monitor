@@ -137,6 +137,24 @@ def cmd_screen_prefetch_backtest(args) -> None:
             limit=args.limit, export_path=args.excel)
 
 
+def cmd_price_backtest(args) -> None:
+    """指定区间 + 固定买入价/卖出价 的价格带回测(复用 app.strategy.price_band_backtest)。
+
+    在 [--start, --end] 区间内, 前复权收盘<=买入价 买入、>=卖出价 卖出, 可反复。"""
+    from .strategy.price_band_backtest import run
+
+    cfg = load_config()
+    symbols = [s.strip() for s in (args.symbols or "").split(",") if s.strip()] \
+        or cfg.watch_symbols
+    if not symbols:
+        raise SystemExit("请用 --symbols 指定股票代码(或先配置 watchlist.yaml)")
+    if args.buy_price >= args.sell_price:
+        raise SystemExit(f"买入价({args.buy_price}) 应小于 卖出价({args.sell_price}), 否则价差不成立")
+
+    run(symbols, start=args.start, end=args.end, buy_price=args.buy_price,
+        sell_price=args.sell_price, buy_amount=args.buy_amount, export_path=args.excel)
+
+
 def cmd_backtest(args) -> None:
     from .core.registry import STRATEGIES
 
@@ -206,6 +224,16 @@ def build_parser() -> argparse.ArgumentParser:
     scr.add_argument("--limit", type=int, default=None, help="最多扫描多少只(先小批试跑, 默认全量)")
     scr.add_argument("--excel", default=None, help="导出逐股结果到该 Excel 文件路径; 缺省不保存")
     scr.set_defaults(func=cmd_screen_prefetch_backtest)
+
+    pb = sub.add_parser("price-backtest", help="指定区间+固定买入价/卖出价的价格带回测")
+    pb.add_argument("--symbols", default=None, help="股票代码, 逗号分隔(缺省用自选股)")
+    pb.add_argument("--start", default=None, help="开始日期, 如 2015-01-01; 缺省=上市首日")
+    pb.add_argument("--end", default=None, help="结束日期, 如 2024-12-31; 缺省=今日(末根K线)")
+    pb.add_argument("--buy-price", type=float, default=10.0, help="前复权买入触发价(元), 默认 10")
+    pb.add_argument("--sell-price", type=float, default=20.0, help="前复权卖出触发价(元), 默认 20")
+    pb.add_argument("--buy-amount", type=float, default=10000.0, help="单次买入金额, 默认 10000")
+    pb.add_argument("--excel", default=None, help="导出逐股结果到该 Excel 文件路径; 缺省不保存")
+    pb.set_defaults(func=cmd_price_backtest)
     return p
 
 
